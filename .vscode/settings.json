@@ -11,6 +11,8 @@
       "source.organizeImports": true
     }
   },
+  "python.analysis.include": ["./src", "./scripts", "./tests"],
+
   "python.formatting.provider": "none",
   "python.formatting.blackArgs": [
     "--line-length=110",
@@ -38,5 +40,8 @@
   "css.lint.validProperties": ["dock", "content-align", "content-justify"],
   "[css]": {
     "editor.formatOnSave": true
-  }
+  },
+
+  "remote.autoForwardPorts": false,
+  "remote.autoForwardPortsSource": "process"
 }
