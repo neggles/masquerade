@@ -14,6 +14,7 @@ ignore = ['F841', 'F401', 'E501']
 line-length = 110
 target-version = 'py310'
 ignore = ['F841', 'F401', 'E501']
+exclude = ["/usr/lib/python3.10/**"]
 
 [tool.ruff.isort]
 combine-as-imports = true
@@ -23,4 +24,5 @@ known-first-party = ["masquerade"]
 
 [tool.pyright]
 include = ['src/**']
+exclude = ['/usr/lib/**']
 stubPath = './typings'
