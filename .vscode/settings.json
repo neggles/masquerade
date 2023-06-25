@@ -2,6 +2,7 @@
   "editor.insertSpaces": true,
   "editor.tabSize": 4,
   "files.trimTrailingWhitespace": true,
+  "editor.rulers": [100, 120],
 
   "[python]": {
     "editor.wordBasedSuggestions": false,
@@ -32,6 +33,12 @@
     "editor.formatOnSave": true,
     "editor.tabSize": 2
   },
+
+  "[yaml]": {
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2
+  },
+  "yaml.format.printWidth": 110,
 
   "[markdown]": {
     "files.trimTrailingWhitespace": false
