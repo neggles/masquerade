@@ -1,11 +1,19 @@
+from enum import Enum
 from pathlib import Path
-from typing import Annotated, List, NoReturn, Optional, Union
+from typing import Annotated, List, NoReturn, Optional
 
 import typer
+from lightning.pytorch.cli import LightningCLI
+from rich.traceback import install as traceback_install
 
+import masquerade.dataset  # noqa: F401
+import masquerade.models  # noqa: F401
 from masquerade import __version__, console
+from masquerade.dataset import HFDatasetModule
 
-cli: typer.Typer = typer.Typer(rich_markup_mode="rich")
+_ = traceback_install()
+
+app: typer.Typer = typer.Typer(rich_markup_mode="rich")
 
 
 def version_callback(value: bool) -> NoReturn:
@@ -14,32 +22,25 @@ def version_callback(value: bool) -> NoReturn:
         raise typer.Exit()
 
 
-def int_list_callback(value: str) -> list[int]:
-    return [int(node) for node in value.split(",")]
-
-
-@cli.command()
+@app.command(no_args_is_help=True)
 def main(
-    verbose: bool = typer.Option(
-        False, "-v", "--verbose", is_flag=True, help="Enable verbose console output."
-    ),
-    option: Path = typer.Option(
-        "./option.ini", "-o", "--option", exists=True, dir_okay=False, help="Path to a file"
-    ),
     version: Annotated[
         Optional[bool],
         typer.Option(
-            "--version",
-            "-v",
-            callback=version_callback,
-            is_eager=True,
-            is_flag=True,
-            help="Show version",
+            "--version", "-v", callback=version_callback, is_eager=True, is_flag=True, help="Show version"
         ),
     ] = None,
-    argument: str = typer.Argument(..., help="An argument"),
+    args: Annotated[
+        List[str],
+        typer.Argument(help="Arguments to pass to the LightningCLI"),
+    ] = ...,
 ) -> NoReturn:
     """
-    Main entrypoint for your application.
+    Main entrypoint for training.
     """
-    raise typer.Exit()
+    cli = LightningCLI(
+        datamodule_class=HFDatasetModule,
+        subclass_mode_data=True,
+        subclass_mode_model=True,
+        args=args,
+    )

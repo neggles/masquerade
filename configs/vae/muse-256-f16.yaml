@@ -1,0 +1,93 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: masquerade.models.autoencoder.AutoencodingEngine
+  params:
+    input_key: jpg
+    monitor: val/rec_loss
+    latent_channels: 3
+    num_vq_embeddings: 8192
+    vq_embed_dim: 256
+    norm_num_groups: 32
+
+    loss_config:
+      target: masquerade.modules.losses.VQLPIPSWithDiscriminator
+      params:
+        perceptual_weight: 0.1
+        disc_start: 20001
+        disc_weight: 0.9
+        learn_logvar: True
+
+    encoder_config:
+      target: masquerade.modules.vqvae.ConvEncoder
+      params:
+        in_channels: 3
+        out_channels: 3
+        down_block_types:
+          [
+            "DownEncoderBlock2D",
+            "DownEncoderBlock2D",
+            "DownEncoderBlock2D",
+            "DownEncoderBlock2D",
+            "AttnDownEncoderBlock2D",
+          ]
+        block_out_channels: [128, 128, 256, 256, 512]
+        layers_per_block: 2
+        norm_num_groups: 32
+        act_fn: "silu"
+        double_z: False
+
+    decoder_config:
+      target: masquerade.modules.vqvae.ConvDecoder
+      params:
+        in_channels: 3
+        out_channels: 3
+        down_block_types:
+          [
+            "AttnUpDecoderBlock2D",
+            "UpDecoderBlock2D",
+            "UpDecoderBlock2D",
+            "UpDecoderBlock2D",
+            "UpDecoderBlock2D",
+          ]
+        block_out_channels: [128, 128, 256, 256, 512]
+        layers_per_block: 2
+        norm_num_groups: 32
+        act_fn: "silu"
+
+data:
+  target: masquerade.dataset.HFDatasetModule
+  params:
+    dataset: "neggles/ine"
+    resolution: 256
+    tokenizer: "google/t5-v1_1-large"
+    streaming: false
+
+lightning:
+  strategy:
+    target: pytorch_lightning.strategies.DDPStrategy
+    params:
+      find_unused_parameters: True
+
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 5000
+
+  callbacks:
+    metrics_over_trainsteps_checkpoint:
+      params:
+        every_n_train_steps: 50000
+
+    image_logger:
+      target: main.ImageLogger
+      params:
+        enable_autocast: False
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: True
+
+  trainer:
+    devices: 0,
+    limit_val_batches: 50
+    benchmark: True
+    accumulate_grad_batches: 1
+    val_check_interval: 10000
