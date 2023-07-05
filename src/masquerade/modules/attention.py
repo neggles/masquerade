@@ -4,41 +4,31 @@ from typing import Any, Optional
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from packaging import version
+from packaging.version import Version
 from torch import nn
+from torch.backends.cuda import SDPBackend, sdp_kernel
 
-if version.parse(torch.__version__) >= version.parse("2.0.0"):
-    SDP_IS_AVAILABLE = True
-    from torch.backends.cuda import SDPBackend, sdp_kernel
+from masquerade.modules.utils import checkpoint
 
-    BACKEND_MAP = {
-        SDPBackend.MATH: {
-            "enable_math": True,
-            "enable_flash": False,
-            "enable_mem_efficient": False,
-        },
-        SDPBackend.FLASH_ATTENTION: {
-            "enable_math": False,
-            "enable_flash": True,
-            "enable_mem_efficient": False,
-        },
-        SDPBackend.EFFICIENT_ATTENTION: {
-            "enable_math": False,
-            "enable_flash": False,
-            "enable_mem_efficient": True,
-        },
-        None: {"enable_math": True, "enable_flash": True, "enable_mem_efficient": True},
-    }
-else:
-    from contextlib import nullcontext
+BACKEND_MAP = {
+    SDPBackend.MATH: {
+        "enable_math": True,
+        "enable_flash": False,
+        "enable_mem_efficient": False,
+    },
+    SDPBackend.FLASH_ATTENTION: {
+        "enable_math": False,
+        "enable_flash": True,
+        "enable_mem_efficient": False,
+    },
+    SDPBackend.EFFICIENT_ATTENTION: {
+        "enable_math": False,
+        "enable_flash": False,
+        "enable_mem_efficient": True,
+    },
+    None: {"enable_math": True, "enable_flash": True, "enable_mem_efficient": True},
+}
 
-    SDP_IS_AVAILABLE = False
-    sdp_kernel = nullcontext
-    BACKEND_MAP = {}
-    print(
-        f"No SDP backend available, likely because you are running in pytorch versions < 2.0. In fact, "
-        f"you are using PyTorch {torch.__version__}. You might want to consider upgrading."
-    )
 
 try:
     import xformers
@@ -49,10 +39,8 @@ except ImportError:
     XFORMERS_IS_AVAILABLE = False
     print("no module 'xformers'. Processing without...")
 
-from .utils import checkpoint
 
-
-def max_neg_value(t):
+def max_neg_value(t) -> float:
     return -torch.finfo(t.dtype).max
 
 
@@ -65,7 +53,7 @@ def init_(tensor):
 
 # feedforward
 class GEGLU(nn.Module):
-    def __init__(self, dim_in, dim_out):
+    def __init__(self, dim_in, dim_out) -> None:
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out * 2)
 
@@ -75,7 +63,7 @@ class GEGLU(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.0):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.0) -> None:
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = dim_out if dim_out is not None else dim
@@ -107,7 +95,7 @@ def Normalize(in_channels):
 
 
 class LinearAttention(nn.Module):
-    def __init__(self, dim, heads=4, dim_head=32):
+    def __init__(self, dim, heads=4, dim_head=32) -> None:
         super().__init__()
         self.heads = heads
         hidden_dim = dim_head * heads
@@ -126,7 +114,7 @@ class LinearAttention(nn.Module):
 
 
 class SpatialSelfAttention(nn.Module):
-    def __init__(self, in_channels):
+    def __init__(self, in_channels) -> None:
         super().__init__()
         self.in_channels = in_channels
 
@@ -350,25 +338,24 @@ class BasicTransformerBlock(nn.Module):
         sdp_backend=None,
     ):
         super().__init__()
-        assert attn_mode in self.ATTENTION_MODES
-        if attn_mode != "softmax" and not XFORMERS_IS_AVAILABLE:
+        if attn_mode not in self.ATTENTION_MODES:
+            raise ValueError(f"Unknown attention mode {attn_mode}.")
+        if attn_mode != "softmax" and (XFORMERS_IS_AVAILABLE is False):
             print(
                 f"Attention mode '{attn_mode}' is not available. Falling back to native attention. "
                 f"This is not a problem in Pytorch >= 2.0. FYI, you are running with PyTorch version {torch.__version__}"
             )
             attn_mode = "softmax"
-        elif attn_mode == "softmax" and not SDP_IS_AVAILABLE:
-            print("We do not support vanilla attention anymore, as it is too expensive. Sorry.")
-            if not XFORMERS_IS_AVAILABLE:
-                assert False, "Please install xformers via e.g. 'pip install xformers==0.0.16'"
-            else:
-                print("Falling back to xformers efficient attention.")
-                attn_mode = "softmax-xformers"
+
         attn_cls = self.ATTENTION_MODES[attn_mode]
-        if version.parse(torch.__version__) >= version.parse("2.0.0"):
-            assert sdp_backend is None or isinstance(sdp_backend, SDPBackend)
-        else:
-            assert sdp_backend is None
+
+        if sdp_backend is not None:
+            if torch.__version__ >= Version("2.0.0"):
+                if not isinstance(sdp_backend, SDPBackend):
+                    raise ValueError(f"Invalid backend {sdp_backend}.")
+            else:
+                raise RuntimeError("SDP backends are only supported in PyTorch >= 2.0.0")
+
         self.disable_self_attn = disable_self_attn
         self.attn1 = attn_cls(
             query_dim=dim,

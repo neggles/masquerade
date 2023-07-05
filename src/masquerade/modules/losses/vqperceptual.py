@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from masquerade.modules.discriminator import NLayerDiscriminator, weights_init
 from masquerade.modules.losses import LPIPS
+from masquerade.modules.losses.patchgan import NLayerDiscriminator, weights_init
 
 
 def adopt_weight(weight, global_step, threshold=0, value=0.0):

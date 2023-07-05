@@ -1,106 +1,85 @@
-# Copyright 2022 The HuggingFace Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions andw
-# limitations under the License.
 from typing import Sequence
 
 import numpy as np
 import torch
-import torch.nn as nn
-from diffusers.models.unet_2d_blocks import get_down_block, get_up_block
+from torch import nn
+
+from masquerade.modules.vqvae.layers import Conv2dSame, DownEncoderBlock2D, ResBlock, UpDecoderBlock2D
 
 
 class ConvEncoder(nn.Module):
     """Convolutional encoder for VQ-VAE.
 
-    This is a copy of diffusers.models.vae.Encoder with the non-local block removed,
-    and the default arguments changed to match the defaults in the MaskGit paper.
+    This is a cut-down version of diffusers.models.vae.Encoder with the non-local block removed,
+    and assorted other changes to match the fully-convolutional architecture of MaskGit's VAE.
     """
 
     def __init__(
         self,
         in_channels: int = 3,
-        out_channels: int = 3,
-        down_block_types: Sequence[str] = (
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "AttnDownEncoderBlock2D",
-        ),
-        block_out_channels: Sequence[int] = (
-            128,
-            128,
-            256,
-            256,
-            512,
-        ),
+        out_channels: int = 256,
+        block_out_channels: Sequence[int] = (128, 128, 256, 256, 512),
         layers_per_block: int = 2,
         norm_num_groups: int = 32,
-        act_fn: str = "silu",
+        use_conv_shortcut: bool = False,
+        conv_downsample: bool = False,
         double_z: bool = False,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
+        self.in_channels = in_channels
+        self.out_channels = 2 * out_channels if double_z else out_channels
 
-        self.conv_in = torch.nn.Conv2d(in_channels, block_out_channels[0], kernel_size=3, stride=1, padding=1)
-
-        self.down_blocks = nn.ModuleList([])
+        self.conv_in = Conv2dSame(self.in_channels, block_out_channels[0], kernel_size=3, bias=False)
 
         # down
+        self.down_blocks = nn.ModuleList([])
         output_channel = block_out_channels[0]
-        for i, down_block_type in enumerate(down_block_types):
-            input_channel = output_channel
+        num_blocks = len(block_out_channels)
+        for i in range(num_blocks):
+            prev_output_channel = output_channel
             output_channel = block_out_channels[i]
-            is_final_block = i == len(block_out_channels) - 1
+            is_final_block = i == num_blocks - 1
 
-            down_block = get_down_block(
-                down_block_type,
-                num_layers=self.layers_per_block,
-                in_channels=input_channel,
+            down_block = DownEncoderBlock2D(
+                in_channels=prev_output_channel,
                 out_channels=output_channel,
-                add_downsample=not is_final_block,
+                num_layers=self.layers_per_block,
                 resnet_eps=1e-6,
-                downsample_padding=0,
-                resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
-                attn_num_head_channels=None,
-                temb_channels=None,
+                use_conv_shortcut=use_conv_shortcut,
+                add_downsample=not is_final_block,
+                conv_downsample=conv_downsample,
             )
             self.down_blocks.append(down_block)
 
+        # mid
+        self.res_blocks = nn.ModuleList([])
+        for _ in range(layers_per_block):
+            self.res_blocks.append(ResBlock(block_out_channels[-1], groups=norm_num_groups))
+
         # out
-        self.conv_norm_out = nn.GroupNorm(
+        self.norm_out = nn.GroupNorm(
             num_channels=block_out_channels[-1], num_groups=norm_num_groups, eps=1e-6
         )
-        self.conv_act = nn.SiLU()
+        self.act_out = nn.SiLU()
+        self.conv_out = Conv2dSame(block_out_channels[-1], self.out_channels, kernel_size=1)
 
-        conv_out_channels = 2 * out_channels if double_z else out_channels
-        self.conv_out = nn.Conv2d(block_out_channels[-1], conv_out_channels, 3, padding=1)
-
-    def forward(self, x):
-        sample = x
-        sample = self.conv_in(sample)
-
+    def forward(self, x: torch.Tensor):
         # down
+        x = self.conv_in(x)
         for down_block in self.down_blocks:
-            sample = down_block(sample)
+            x = down_block(x)
 
-        # post-process
-        sample = self.conv_norm_out(sample)
-        sample = self.conv_act(sample)
-        sample = self.conv_out(sample)
+        # mid
+        for res_block in self.res_blocks:
+            x = res_block(x)
 
-        return sample
+        # end
+        x = self.norm_out(x)
+        x = self.act_out(x)
+        x = self.conv_out(x)
+        return x
 
 
 class ConvDecoder(nn.Module):
@@ -112,77 +91,82 @@ class ConvDecoder(nn.Module):
 
     def __init__(
         self,
-        in_channels=3,
-        out_channels=3,
-        up_block_types: Sequence[str] = (
-            "AttnUpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-        ),
+        in_channels: int = 3,
+        out_channels: int = 256,
         block_out_channels: Sequence[int] = (128, 128, 256, 256, 512),
         layers_per_block: int = 2,
         norm_num_groups: int = 32,
-        act_fn="silu",
+        use_conv_shortcut: bool = False,
+        conv_downsample: bool = False,
+        double_z: bool = False,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        self.conv_in = nn.Conv2d(in_channels, block_out_channels[-1], kernel_size=3, stride=1, padding=1)
+        # flip the channels since we're sharing args with the encoder
+        self.in_channels = 2 * out_channels if double_z else out_channels
+        self.out_channels = in_channels
+        block_out_channels = list(reversed(block_out_channels))
 
-        self.mid_block = None
-        self.up_blocks = nn.ModuleList([])
+        # in
+        self.conv_in = Conv2dSame(self.in_channels, block_out_channels[0], kernel_size=3, bias=True)
+
+        # mid
+        self.res_blocks = nn.ModuleList([])
+        for _ in range(layers_per_block):
+            self.res_blocks.append(
+                ResBlock(
+                    block_out_channels[0],
+                    groups=norm_num_groups,
+                    eps=1e-6,
+                    use_conv_shortcut=use_conv_shortcut,
+                )
+            )
 
         # up
-        reversed_block_out_channels = list(reversed(block_out_channels))
-        output_channel = reversed_block_out_channels[0]
-        for i, up_block_type in enumerate(up_block_types):
+        self.up_blocks = nn.ModuleList([])
+        output_channel = block_out_channels[0]
+        num_blocks = len(block_out_channels)
+        for i in range(num_blocks):
             prev_output_channel = output_channel
-            output_channel = reversed_block_out_channels[i]
+            output_channel = block_out_channels[i]
+            is_first_block = i == 0
 
-            is_final_block = i == len(block_out_channels) - 1
-
-            up_block = get_up_block(
-                up_block_type,
-                num_layers=self.layers_per_block + 1,
+            up_block = UpDecoderBlock2D(
                 in_channels=prev_output_channel,
                 out_channels=output_channel,
-                prev_output_channel=None,
-                add_upsample=not is_final_block,
+                num_layers=self.layers_per_block,
                 resnet_eps=1e-6,
-                resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
-                attn_num_head_channels=None,
-                temb_channels=None,
+                use_conv_shortcut=use_conv_shortcut,
+                add_upsample=is_first_block,
             )
             self.up_blocks.append(up_block)
-            prev_output_channel = output_channel
 
         # out
-        self.conv_norm_out = nn.GroupNorm(
-            num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=1e-6
+        self.norm_out = nn.GroupNorm(
+            num_channels=block_out_channels[-1], num_groups=norm_num_groups, eps=1e-6
         )
-        self.conv_act = nn.SiLU()
-        self.conv_out = nn.Conv2d(block_out_channels[0], out_channels, 3, padding=1)
+        self.act_out = nn.SiLU()
+        self.conv_out = Conv2dSame(block_out_channels[-1], self.out_channels, 3)
 
-    def forward(self, z):
-        sample = z
-        sample = self.conv_in(sample)
+    def forward(self, x):
+        # in
+        x = self.conv_in(x)
 
-        # middle
-        sample = self.mid_block(sample)
+        # mid
+        for res_block in self.res_blocks:
+            x = res_block(x)
 
         # up
         for up_block in self.up_blocks:
-            sample = up_block(sample)
+            x = up_block(x)
 
-        # post-process
-        sample = self.conv_norm_out(sample)
-        sample = self.conv_act(sample)
-        sample = self.conv_out(sample)
-
-        return sample
+        # out
+        x = self.norm_out(x)
+        x = self.act_out(x)
+        x = self.conv_out(x)
+        return x
 
 
 class VectorQuantizer(nn.Module):
@@ -249,7 +233,7 @@ class VectorQuantizer(nn.Module):
         back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
         return back.reshape(ishape)
 
-    def forward(self, z):
+    def forward(self, z: torch.Tensor):
         # reshape z -> (batch, height, width, channel) and flatten
         z = z.permute(0, 2, 3, 1).contiguous()
         z_flattened = z.view(-1, self.vq_embed_dim)
@@ -257,7 +241,7 @@ class VectorQuantizer(nn.Module):
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
         min_encoding_indices = torch.argmin(torch.cdist(z_flattened, self.embedding.weight), dim=1)
 
-        z_q = self.embedding(min_encoding_indices).view(z.shape)
+        z_q: torch.Tensor = self.embedding(min_encoding_indices).view(z.shape)
         perplexity = None
         min_encodings = None
 

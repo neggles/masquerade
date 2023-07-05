@@ -5,29 +5,28 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import lightning as L
 import torch
+import torch.nn.functional as F
+from lightning.pytorch.cli import LRSchedulerCallable, OptimizerCallable
 from omegaconf import ListConfig
 from packaging import version
 from safetensors.torch import load_file as load_safetensors
+from torch import nn
+from vector_quantize_pytorch import VectorQuantize
 
 from masquerade.modules.ema import LitEma
-from masquerade.modules.vqvae import ConvDecoder, ConvEncoder
-from masquerade.utils import get_obj_from_str, instantiate_from_config
+from masquerade.modules.vqvae import ConvDecoder, ConvEncoder, VectorQuantizer
 
 
-class AbstractAutoencoder(L.LightningModule):
+class BaseAutoencoder(L.LightningModule):
     """
-    This is the base class for all autoencoders, including image autoencoders, image autoencoders with discriminators,
-    unCLIP models, etc. Hence, it is fairly general, and specific features
-    (e.g. discriminator training, encoding, decoding) must be implemented in subclasses.
+    Base class for autoencoders.
     """
-
-    learning_rate: float
 
     def __init__(
         self,
         ema_decay: Optional[float] = None,
         monitor: Optional[str] = None,
-        input_key: str = "jpg",
+        input_key: str = "image",
         ckpt_path: Optional[str] = None,
         ignore_keys: Union[Tuple, list, ListConfig] = (),
     ):
@@ -100,51 +99,41 @@ class AbstractAutoencoder(L.LightningModule):
     def decode(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError(f"decode() not implemented in {self.__class__}")
 
-    def instantiate_optimizer_from_config(self, params, lr, cfg):
-        print(f"loading >>> {cfg['target']} <<< optimizer from config")
-        return get_obj_from_str(cfg["target"])(params, lr=lr, **cfg.get("params", dict()))
-
     def configure_optimizers(self) -> Any:
         raise NotImplementedError(f"configure_optimizers() not implemented in {self.__class__}")
 
 
-class AutoencodingEngine(AbstractAutoencoder):
-    """
-    Base class for all image autoencoders that we train, like VQGAN or AutoencoderKL
-    (we also restore them explicitly as special cases for legacy reasons).
-    Regularizations such as KL or VQ are moved to the regularizer class.
-    """
-
+class VQAutoEncoder(BaseAutoencoder):
     def __init__(
         self,
         *args,
-        encoder_config: Dict,
-        decoder_config: Dict,
-        loss_config: Dict,
-        regularizer_config: Dict,
-        optimizer_config: Union[Dict, None] = None,
+        encoder: ConvEncoder,
+        decoder: ConvDecoder,
+        quantizer: Union[VectorQuantizer, VectorQuantize],
+        loss: nn.Module,
+        opt_ae: OptimizerCallable,
+        opt_disc: OptimizerCallable,
         lr_g_factor: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        # todo: add options to freeze encoder/decoder
-        self.encoder = instantiate_from_config(encoder_config)
-        self.decoder = instantiate_from_config(decoder_config)
-        self.loss = instantiate_from_config(loss_config)
-        self.regularization = instantiate_from_config(regularizer_config)
-        self.optimizer_config = optimizer_config or {"target": "torch.optim.Adam"}
+
+        self.encoder = encoder
+        self.quantize = quantizer
+        self.decoder = decoder
+        self.loss = loss
+        self.opt_ae = opt_ae
+        self.opt_disc = opt_disc
         self.lr_g_factor = lr_g_factor
 
     def get_input(self, batch: Dict) -> torch.Tensor:
-        # assuming unified data format, dataloader returns a dict.
-        # image tensors should be scaled to -1 ... 1 and in channels-first format (e.g., bchw instead if bhwc)
         return batch[self.input_key]
 
     def get_autoencoder_params(self) -> list:
         params = (
             list(self.encoder.parameters())
             + list(self.decoder.parameters())
-            + list(self.regularization.get_trainable_parameters())
+            + list(self.quantize.get_trainable_parameters())
             + list(self.loss.get_trainable_autoencoder_parameters())
         )
         return params
@@ -158,7 +147,7 @@ class AutoencodingEngine(AbstractAutoencoder):
 
     def encode(self, x: Any, return_reg_log: bool = False) -> Any:
         z = self.encoder(x)
-        z, reg_log = self.regularization(z)
+        z, reg_log = self.quantize(z)
         if return_reg_log:
             return z, reg_log
         return z
@@ -242,18 +231,17 @@ class AutoencodingEngine(AbstractAutoencoder):
 
     def configure_optimizers(self) -> Any:
         ae_params = self.get_autoencoder_params()
-        disc_params = self.get_discriminator_params()
-
-        opt_ae = self.instantiate_optimizer_from_config(
+        opt_ae = self.opt_ae(
             ae_params,
-            (self.lr_g_factor or 1.0) * self.learning_rate,
-            self.optimizer_config,
+            lr=(self.lr_g_factor or 1.0) * self.learning_rate,
         )
-        opt_disc = self.instantiate_optimizer_from_config(
-            disc_params, self.learning_rate, self.optimizer_config
+        disc_params = self.get_discriminator_params()
+        opt_disc = self.opt_disc(
+            disc_params,
+            lr=self.learning_rate,
         )
 
-        return [opt_ae, opt_disc], []
+        return [opt_ae, opt_disc]
 
     @torch.no_grad()
     def log_images(self, batch: Dict, **kwargs) -> Dict:

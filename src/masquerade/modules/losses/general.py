@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from masquerade.modules.discriminator import NLayerDiscriminator, weights_init
 from masquerade.modules.losses.lpips import LPIPS
+from masquerade.modules.losses.patchgan import NLayerDiscriminator, weights_init
 from masquerade.modules.losses.vqperceptual import hinge_d_loss, vanilla_d_loss
 
 

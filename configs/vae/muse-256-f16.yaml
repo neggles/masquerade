@@ -1,62 +1,61 @@
 model:
   base_learning_rate: 4.5e-6
-  target: masquerade.models.autoencoder.AutoencodingEngine
-  params:
+  class_path: masquerade.models.autoencoder.VQAutoEncoder
+  init_args:
     input_key: jpg
     monitor: val/rec_loss
     latent_channels: 3
-    num_vq_embeddings: 8192
     vq_embed_dim: 256
-    norm_num_groups: 32
+    num_vq_embeddings: 8192
+    lr_g_factor: 1.0
 
-    loss_config:
-      target: masquerade.modules.losses.VQLPIPSWithDiscriminator
-      params:
+    encoder:
+      class_path: masquerade.modules.vqvae.ConvEncoder
+      init_args:
+        in_channels: 3
+        out_channels: 3
+        block_out_channels: [128, 128, 256, 256, 512]
+        layers_per_block: 2
+        norm_num_groups: 32
+        use_conv_shortcut: False
+        conv_downsample: False
+        double_z: False
+
+    decoder:
+      class_path: masquerade.modules.vqvae.ConvDecoder
+      init_args:
+        in_channels: 3
+        out_channels: 3
+        # this is reversed in __init__ so it's actually [512, 256, 256, 128, 128]
+        # this way the encoder/decoder can share args
+        block_out_channels: [128, 128, 256, 256, 512]
+        layers_per_block: 2
+        norm_num_groups: 32
+        use_conv_shortcut: False
+        conv_downsample: False
+        double_z: False
+
+    quantizer:
+      class_path: vector_quantize_pytorch.VectorQuantize
+      init_args:
+        dim: 256
+        codebook_dim: 256
+        codebook_size: 8192
+        commitment_cost: 0.25
+        decay: 0.99
+        epsilon: 1e-5
+
+    loss:
+      class_path: masquerade.modules.losses.VQLPIPSWithDiscriminator
+      init_args:
         perceptual_weight: 0.1
         disc_start: 20001
         disc_weight: 0.9
         learn_logvar: True
 
-    encoder_config:
-      target: masquerade.modules.vqvae.ConvEncoder
-      params:
-        in_channels: 3
-        out_channels: 3
-        down_block_types:
-          [
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "DownEncoderBlock2D",
-            "AttnDownEncoderBlock2D",
-          ]
-        block_out_channels: [128, 128, 256, 256, 512]
-        layers_per_block: 2
-        norm_num_groups: 32
-        act_fn: "silu"
-        double_z: False
-
-    decoder_config:
-      target: masquerade.modules.vqvae.ConvDecoder
-      params:
-        in_channels: 3
-        out_channels: 3
-        down_block_types:
-          [
-            "AttnUpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-            "UpDecoderBlock2D",
-          ]
-        block_out_channels: [128, 128, 256, 256, 512]
-        layers_per_block: 2
-        norm_num_groups: 32
-        act_fn: "silu"
-
 data:
-  target: masquerade.dataset.HFDatasetModule
-  params:
+  class_path: masquerade.dataset.HFDatasetModule
+  init_args:
     dataset: "neggles/ine"
     resolution: 256
     tokenizer: "google/t5-v1_1-large"
@@ -64,22 +63,22 @@ data:
 
 lightning:
   strategy:
-    target: pytorch_lightning.strategies.DDPStrategy
-    params:
+    class_path: pytorch_lightning.strategies.DDPStrategy
+    init_args:
       find_unused_parameters: True
 
   modelcheckpoint:
-    params:
+    init_args:
       every_n_train_steps: 5000
 
   callbacks:
     metrics_over_trainsteps_checkpoint:
-      params:
+      init_args:
         every_n_train_steps: 50000
 
     image_logger:
-      target: main.ImageLogger
-      params:
+      class_path: main.ImageLogger
+      init_args:
         enable_autocast: False
         batch_frequency: 1000
         max_images: 8
@@ -91,3 +90,6 @@ lightning:
     benchmark: True
     accumulate_grad_batches: 1
     val_check_interval: 10000
+    callbacks:
+      - class_path: masquerade.trainer.callbacks.SetupCallback
+        init_args:
