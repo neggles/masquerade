@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,23 +9,23 @@ from masquerade.modules.losses import LPIPS
 from masquerade.modules.losses.patchgan import NLayerDiscriminator, weights_init
 
 
-def adopt_weight(weight, global_step, threshold=0, value=0.0):
+def adopt_weight(weight: Tensor, global_step: int, threshold: int = 0, value=0.0) -> Tensor:
     if global_step < threshold:
         weight = value
     return weight
 
 
-def hinge_d_loss(logits_real, logits_fake) -> Tensor:
+def hinge_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
     loss_real = torch.mean(F.relu(1.0 - logits_real))
     loss_fake = torch.mean(F.relu(1.0 + logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
+    d_loss = torch.mul(0.5, torch.add(loss_real, loss_fake))
     return d_loss
 
 
-def vanilla_d_loss(logits_real, logits_fake) -> Tensor:
+def vanilla_d_loss(logits_real: Tensor, logits_fake: Tensor) -> Tensor:
     loss_real = torch.mean(F.softplus(-logits_real))
     loss_fake = torch.mean(F.softplus(logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
+    d_loss = torch.mul(0.5, torch.add(loss_real, loss_fake))
     return d_loss
 
 
@@ -41,18 +43,25 @@ class VQLPIPSWithDiscriminator(nn.Module):
         disc_loss: str = "hinge",
     ):
         super().__init__()
-        assert disc_loss in ["hinge", "vanilla"]
+        if disc_loss == "hinge":
+            self.disc_loss = hinge_d_loss
+        elif disc_loss == "vanilla":
+            self.disc_loss = vanilla_d_loss
+        else:
+            raise ValueError(f"disc_loss must be one of ['hinge', 'vanilla'], got {disc_loss}")
+
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
         self.perceptual_loss = LPIPS().eval()
         self.perceptual_weight = perceptual_weight
 
         self.discriminator = NLayerDiscriminator(
-            input_nc=disc_in_channels, n_layers=disc_num_layers, use_actnorm=False
-        ).apply(weights_init)
+            input_nc=disc_in_channels,
+            n_layers=disc_num_layers,
+            use_actnorm=False,
+        )
+        self.discriminator.initialize_weights()
         self.discriminator_iter_start = disc_start
-
-        self.disc_loss = hinge_d_loss if disc_loss == "hinge" else vanilla_d_loss
 
         print(f"VQLPIPSWithDiscriminator running with {disc_loss} loss.")
         self.disc_factor = disc_factor
@@ -76,13 +85,13 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
     def forward(
         self,
-        codebook_loss,
-        inputs,
-        reconstructions,
-        optimizer_idx,
-        global_step,
-        last_layer=None,
-        split="train",
+        codebook_loss: Tensor,
+        inputs: Tensor,
+        reconstructions: Tensor,
+        optimizer_idx: int,
+        global_step: int,
+        last_layer: Optional[Tensor] = None,
+        split: str = "train",
     ):
         rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
         if self.perceptual_weight > 0:
@@ -111,7 +120,10 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 d_weight = torch.tensor(0.0)
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
-            loss = nll_loss + d_weight * disc_factor * g_loss + self.codebook_weight * codebook_loss.mean()
+
+            loss = (
+                nll_loss + (d_weight * disc_factor * g_loss) + (self.codebook_weight * codebook_loss.mean())
+            )
 
             log = {
                 "{}/total_loss".format(split): loss.clone().detach().mean(),
@@ -125,7 +137,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
             }
             return loss, log
 
-        if optimizer_idx == 1:
+        elif optimizer_idx == 1:
             # second pass for discriminator update
             logits_real = self.discriminator(inputs.contiguous().detach())
             logits_fake = self.discriminator(reconstructions.contiguous().detach())
@@ -139,3 +151,6 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 "{}/logits_fake".format(split): logits_fake.detach().mean(),
             }
             return d_loss, log
+
+        else:
+            raise ValueError("optimizer_idx must be 0 or 1")

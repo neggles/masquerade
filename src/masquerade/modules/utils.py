@@ -10,10 +10,11 @@ thanks!
 """
 
 import math
+from typing import Any, Callable, Optional, Sequence
 
 import torch
-import torch.nn as nn
 from einops import repeat
+from torch import Tensor, nn
 
 
 def make_beta_schedule(
@@ -66,12 +67,12 @@ def mixed_checkpoint(func, inputs: dict, params, flag):
 class MixedCheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
-        run_function,
-        length_tensors,
-        length_non_tensors,
-        tensor_keys,
-        non_tensor_keys,
+        ctx: Any,
+        run_function: Callable,
+        length_tensors: int,
+        length_non_tensors: int,
+        tensor_keys: Sequence[str],
+        non_tensor_keys: Sequence[str],
         *args,
     ):
         ctx.end_tensors = length_tensors
@@ -127,7 +128,12 @@ class MixedCheckpointFunction(torch.autograd.Function):
         )
 
 
-def checkpoint(func, inputs, params, flag):
+def checkpoint(
+    func: Callable,
+    inputs,
+    params,
+    flag: Optional[bool] = None,
+):
     """
     Evaluate a function without caching intermediate activations, allowing for
     reduced memory at the expense of extra compute in the backward pass.
@@ -180,7 +186,12 @@ class CheckpointFunction(torch.autograd.Function):
         return (None, None) + input_grads
 
 
-def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
+def timestep_embedding(
+    timesteps: Tensor,
+    dim: int,
+    max_period: int = 10000,
+    repeat_only: bool = False,
+) -> Tensor:
     """
     Create sinusoidal timestep embeddings.
     :param timesteps: a 1-D Tensor of N indices, one per batch element.
@@ -203,7 +214,7 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     return embedding
 
 
-def zero_module(module):
+def zero_module(module: nn.Module) -> nn.Module:
     """
     Zero out the parameters of a module and return it.
     """
@@ -212,7 +223,7 @@ def zero_module(module):
     return module
 
 
-def scale_module(module, scale):
+def scale_module(module: nn.Module, scale):
     """
     Scale the parameters of a module and return it.
     """
@@ -221,14 +232,19 @@ def scale_module(module, scale):
     return module
 
 
-def mean_flat(tensor):
+def mean_flat(tensor: Tensor):
     """
     Take the mean over all non-batch dimensions.
     """
     return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
-def normalization(channels):
+class GroupNorm32(nn.GroupNorm):
+    def forward(self, x: Tensor) -> Tensor:
+        return super().forward(x.float()).type(x.dtype)
+
+
+def normalization(channels: int) -> GroupNorm32:
     """
     Make a standard normalization layer.
     :param channels: number of input channels.
@@ -237,12 +253,7 @@ def normalization(channels):
     return GroupNorm32(32, channels)
 
 
-class GroupNorm32(nn.GroupNorm):
-    def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
-
-
-def conv_nd(dims, *args, **kwargs):
+def conv_nd(dims, *args, **kwargs) -> nn.Conv1d | nn.Conv2d | nn.Conv3d:
     """
     Create a 1D, 2D, or 3D convolution module.
     """
@@ -255,14 +266,7 @@ def conv_nd(dims, *args, **kwargs):
     raise ValueError(f"unsupported dimensions: {dims}")
 
 
-def linear(*args, **kwargs):
-    """
-    Create a linear module.
-    """
-    return nn.Linear(*args, **kwargs)
-
-
-def avg_pool_nd(dims, *args, **kwargs):
+def avg_pool_nd(dims: int, *args, **kwargs) -> nn.AvgPool1d | nn.AvgPool2d | nn.AvgPool3d:
     """
     Create a 1D, 2D, or 3D average pooling module.
     """
@@ -272,10 +276,13 @@ def avg_pool_nd(dims, *args, **kwargs):
         return nn.AvgPool2d(*args, **kwargs)
     elif dims == 3:
         return nn.AvgPool3d(*args, **kwargs)
-    raise ValueError(f"unsupported dimensions: {dims}")
+    else:
+        raise ValueError(f"unsupported dimensions: {dims}")
 
 
 class ActNorm(nn.Module):
+    initialized: Tensor
+
     def __init__(self, num_features, logdet=False, affine=True, allow_reverse_init=False):
         assert affine
         super().__init__()
@@ -286,7 +293,7 @@ class ActNorm(nn.Module):
 
         self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
 
-    def initialize(self, input):
+    def initialize(self, input: Tensor):
         with torch.no_grad():
             flatten = input.permute(1, 0, 2, 3).contiguous().view(input.shape[1], -1)
             mean = flatten.mean(1).unsqueeze(1).unsqueeze(2).unsqueeze(3).permute(1, 0, 2, 3)
@@ -295,7 +302,7 @@ class ActNorm(nn.Module):
             self.loc.data.copy_(-mean)
             self.scale.data.copy_(1 / (std + 1e-6))
 
-    def forward(self, input, reverse=False):
+    def forward(self, input: Tensor, reverse=False):
         if reverse:
             return self.reverse(input)
         if len(input.shape) == 2:
@@ -323,16 +330,16 @@ class ActNorm(nn.Module):
 
         return h
 
-    def reverse(self, output):
+    def reverse(self, output: Tensor) -> Tensor:
         if self.training and self.initialized.item() == 0:
-            if not self.allow_reverse_init:
-                raise RuntimeError(
-                    "Initializing ActNorm in reverse direction is "
-                    "disabled by default. Use allow_reverse_init=True to enable."
-                )
-            else:
+            if self.allow_reverse_init:
                 self.initialize(output)
                 self.initialized.fill_(1)
+            else:
+                raise RuntimeError(
+                    "ActNorm has not been initialized with forward pass, "
+                    + "use .initialize() first or set allow_reverse_init=True"
+                )
 
         if len(output.shape) == 2:
             output = output[:, :, None, None]
