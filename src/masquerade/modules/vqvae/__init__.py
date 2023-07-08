@@ -1,7 +1,7 @@
-from .modules import ConvDecoder, ConvEncoder, VectorQuantizer
+from .modules import ConvDecoder, ConvEncoder, VectorQuantize2
 
 __all__ = [
     "ConvDecoder",
     "ConvEncoder",
-    "VectorQuantizer",
+    "VectorQuantize2",
 ]

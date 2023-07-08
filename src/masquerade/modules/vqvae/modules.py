@@ -1,8 +1,9 @@
-from typing import Sequence
+from os import PathLike
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from masquerade.modules.vqvae.layers import Conv2dSame, DownEncoderBlock2D, ResBlock, UpDecoderBlock2D
 
@@ -81,12 +82,17 @@ class ConvEncoder(nn.Module):
         x = self.conv_out(x)
         return x
 
+    def get_last_layer(self):
+        return self.conv_out.weight
+
 
 class ConvDecoder(nn.Module):
     """Convolutional decoder for VQ-VAE.
 
     This is a copy of diffusers.models.vae.Decoder with the non-local block removed,
     and the default arguments changed to match the defaults in the MaskGit paper.
+
+    This shares arguments with the encoder, so the channel count list is reversed!
     """
 
     def __init__(
@@ -97,13 +103,13 @@ class ConvDecoder(nn.Module):
         layers_per_block: int = 2,
         norm_num_groups: int = 32,
         use_conv_shortcut: bool = False,
-        conv_downsample: bool = False,
+        conv_downsample: bool = False,  # shared with encoder, unused here
         double_z: bool = False,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
 
-        # flip the channels since we're sharing args with the encoder
+        # flip the channel counts since we're sharing args with the encoder
         self.in_channels = 2 * out_channels if double_z else out_channels
         self.out_channels = in_channels
         block_out_channels = list(reversed(block_out_channels))
@@ -150,7 +156,7 @@ class ConvDecoder(nn.Module):
         self.act_out = nn.SiLU()
         self.conv_out = Conv2dSame(block_out_channels[-1], self.out_channels, 3)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         # in
         x = self.conv_in(x)
 
@@ -168,21 +174,26 @@ class ConvDecoder(nn.Module):
         x = self.conv_out(x)
         return x
 
+    def get_last_layer(self) -> Tensor:
+        return self.conv_out.weight
 
-class VectorQuantizer(nn.Module):
+
+class VectorQuantize2(nn.Module):
     """
     Improved version over VectorQuantizer, can be used as a drop-in replacement. Mostly avoids costly matrix
     multiplications and allows for post-hoc remapping of indices.
     """
 
+    used: Optional[Tensor]  # used for remapping indices
+
     def __init__(
         self,
-        n_e,
-        vq_embed_dim,
-        beta,
-        remap=None,
-        unknown_index="random",
-        sane_index_shape=False,
+        n_e: int,
+        vq_embed_dim: int,
+        beta: float,
+        remap: Optional[PathLike] = None,
+        unknown_index: str = "random",
+        sane_index_shape: bool = False,
     ):
         super().__init__()
         self.n_e = n_e
@@ -209,7 +220,7 @@ class VectorQuantizer(nn.Module):
 
         self.sane_index_shape = sane_index_shape
 
-    def remap_to_used(self, inds):
+    def remap_to_used(self, inds: Tensor) -> Tensor:
         ishape = inds.shape
         assert len(ishape) > 1
         inds = inds.reshape(ishape[0], -1)
@@ -233,7 +244,7 @@ class VectorQuantizer(nn.Module):
         back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
         return back.reshape(ishape)
 
-    def forward(self, z: torch.Tensor):
+    def forward(self, z: Tensor):
         # reshape z -> (batch, height, width, channel) and flatten
         z = z.permute(0, 2, 3, 1).contiguous()
         z_flattened = z.view(-1, self.vq_embed_dim)
@@ -264,7 +275,7 @@ class VectorQuantizer(nn.Module):
 
         return z_q, loss, (perplexity, min_encodings, min_encoding_indices)
 
-    def get_codebook_entry(self, indices, shape):
+    def get_codebook_entry(self, indices: Tensor, shape):
         # shape specifying (batch, height, width, channel)
         if self.remap is not None:
             indices = indices.reshape(shape[0], -1)  # add batch axis

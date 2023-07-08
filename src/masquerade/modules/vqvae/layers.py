@@ -55,11 +55,11 @@ class ResBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels or in_channels
 
-        self.norm1 = nn.GroupNorm(num_groups=groups, num_channels=in_channels, eps=eps)
+        self.norm1 = nn.GroupNorm(num_groups=groups, num_channels=in_channels, eps=eps, affine=True)
         self.act1 = nn.SiLU()
         self.conv1 = Conv2dSame(self.in_channels, self.out_channels, kernel_size=3, bias=False)
 
-        self.norm2 = nn.GroupNorm(num_groups=groups, num_channels=self.out_channels, eps=eps)
+        self.norm2 = nn.GroupNorm(num_groups=groups, num_channels=self.out_channels, eps=eps, affine=True)
         self.act2 = nn.SiLU()
         self.dropout = nn.Dropout(p=dropout)
         self.conv2 = Conv2dSame(self.out_channels, self.out_channels, kernel_size=3, bias=False)
