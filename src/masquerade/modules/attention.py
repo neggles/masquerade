@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from packaging.version import Version
-from torch import nn
+from torch import Tensor, nn
 from torch.backends.cuda import SDPBackend, sdp_kernel
 
 from masquerade.modules.utils import checkpoint
@@ -40,7 +40,7 @@ except ImportError:
     print("no module 'xformers'. Processing without...")
 
 
-def max_neg_value(t) -> float:
+def max_neg_value(t: Tensor) -> float:
     return -torch.finfo(t.dtype).max
 
 
@@ -57,7 +57,7 @@ class GEGLU(nn.Module):
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out * 2)
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         x, gate = self.proj(x).chunk(2, dim=-1)
         return x * F.gelu(gate)
 
@@ -77,7 +77,7 @@ class FeedForward(nn.Module):
 
         self.net = nn.Sequential(project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim_out))
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         return self.net(x)
 
 
@@ -90,10 +90,6 @@ def zero_module(module):
     return module
 
 
-def Normalize(in_channels):
-    return torch.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
-
-
 class LinearAttention(nn.Module):
     def __init__(self, dim, heads=4, dim_head=32) -> None:
         super().__init__()
@@ -102,7 +98,7 @@ class LinearAttention(nn.Module):
         self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         b, c, h, w = x.shape
         qkv = self.to_qkv(x)
         q, k, v = rearrange(qkv, "b (qkv heads c) h w -> qkv b heads c (h w)", heads=self.heads, qkv=3)
@@ -118,13 +114,13 @@ class SpatialSelfAttention(nn.Module):
         super().__init__()
         self.in_channels = in_channels
 
-        self.norm = Normalize(in_channels)
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
         self.q = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
         self.k = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
         self.v = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
         self.proj_out = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         h_ = x
         h_ = self.norm(h_)
         q = self.q(h_)
@@ -176,11 +172,11 @@ class CrossAttention(nn.Module):
 
     def forward(
         self,
-        x,
-        context=None,
-        mask=None,
-        additional_tokens=None,
-        n_times_crossframe_attn_in_self=0,
+        x: Tensor,
+        context: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+        additional_tokens: Optional[Tensor] = None,
+        n_times_crossframe_attn_in_self: int = 0,
     ):
         h = self.heads
 
@@ -259,11 +255,11 @@ class MemoryEfficientCrossAttention(nn.Module):
 
     def forward(
         self,
-        x,
-        context=None,
-        mask=None,
-        additional_tokens=None,
-        n_times_crossframe_attn_in_self=0,
+        x: Tensor,
+        context: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+        additional_tokens: Optional[Tensor] = None,
+        n_times_crossframe_attn_in_self: int = 0,
     ):
         if additional_tokens is not None:
             # get the number of masked tokens at the beginning of the output sequence
@@ -381,7 +377,13 @@ class BasicTransformerBlock(nn.Module):
         if self.checkpoint:
             print(f"{self.__class__.__name__} is using checkpointing")
 
-    def forward(self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
+    def forward(
+        self,
+        x: Tensor,
+        context: Optional[Tensor] = None,
+        additional_tokens: Optional[Tensor] = None,
+        n_times_crossframe_attn_in_self: int = 0,
+    ):
         kwargs = {"x": x}
 
         if context is not None:
@@ -506,7 +508,7 @@ class SpatialTransformer(nn.Module):
 
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
-        self.norm = Normalize(in_channels)
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
         if not use_linear:
             self.proj_in = nn.Conv2d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
         else:
