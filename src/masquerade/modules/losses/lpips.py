@@ -2,7 +2,7 @@
 from collections import OrderedDict, namedtuple
 
 import torch
-import torch.nn as nn
+from torch import Tensor, nn
 from torchvision.models import vgg
 
 from masquerade.data import lpips_checkpoint
@@ -33,7 +33,7 @@ class LPIPS(nn.Module):
             self.load_state_dict(torch.load(ckpt, map_location=torch.device("cpu")), strict=False)
         print("loaded pretrained LPIPS loss from {}.pth".format(name))
 
-    def forward(self, input, target):
+    def forward(self, input: Tensor, target):
         in0_input, in1_input = (self.scaling_layer(input), self.scaling_layer(target))
         outs0, outs1 = self.net(in0_input), self.net(in1_input)
         feats0, feats1, diffs = {}, {}, {}
@@ -50,15 +50,15 @@ class LPIPS(nn.Module):
 
 
 class ScalingLayer(nn.Module):
-    shift: torch.Tensor
-    scale: torch.Tensor
+    shift: Tensor
+    scale: Tensor
 
     def __init__(self):
         super().__init__()
-        self.register_buffer("shift", torch.Tensor([-0.030, -0.088, -0.188])[None, :, None, None])
-        self.register_buffer("scale", torch.Tensor([0.458, 0.448, 0.450])[None, :, None, None])
+        self.register_buffer("shift", Tensor([-0.030, -0.088, -0.188])[None, :, None, None])
+        self.register_buffer("scale", Tensor([0.458, 0.448, 0.450])[None, :, None, None])
 
-    def forward(self, inp: torch.Tensor) -> torch.Tensor:
+    def forward(self, inp: Tensor) -> Tensor:
         return (inp - self.shift) / self.scale
 
 
@@ -76,8 +76,12 @@ class NetLinLayer(nn.Module):
         return self.layer(x)
 
 
-class vgg16(torch.nn.Module):
-    def __init__(self, requires_grad=False, weights=vgg.VGG16_Weights.IMAGENET1K_V1):
+class vgg16(nn.Module):
+    def __init__(
+        self,
+        requires_grad=False,
+        weights=vgg.VGG16_Weights.IMAGENET1K_V1,
+    ):
         super().__init__()
         vgg_pretrained_features = vgg.vgg16(weights=weights).features
 
@@ -97,8 +101,8 @@ class vgg16(torch.nn.Module):
             OrderedDict([(str(x), vgg_pretrained_features[x]) for x in range(23, 30)]),
         )
 
-        if not requires_grad:
-            self.requires_grad_(False)
+        # freeze parameters if not training
+        self.requires_grad_(requires_grad)
 
     def forward(self, x) -> VggOutputs:
         h = self.slice1(x)
@@ -115,10 +119,10 @@ class vgg16(torch.nn.Module):
         return out
 
 
-def normalize_tensor(x, eps=1e-10):
+def normalize_tensor(x: Tensor, eps=1e-10) -> Tensor:
     norm_factor = torch.sqrt(torch.sum(x**2, dim=1, keepdim=True))
     return x / (norm_factor + eps)
 
 
-def spatial_average(x, keepdim=True):
+def spatial_average(x: Tensor, keepdim=True) -> Tensor:
     return x.mean([2, 3], keepdim=keepdim)
