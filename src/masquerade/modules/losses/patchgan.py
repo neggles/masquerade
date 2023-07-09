@@ -4,14 +4,18 @@ from masquerade.modules.utils import ActNorm
 
 
 def weights_init(m: nn.Module):
+    init_gain = 0.02  # this could be adjusted, but doesn't need to be here
+
     classname = m.__class__.__name__
-    if "Conv" in classname:
-        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    if hasattr(m, "weight") and any(("Conv" in classname, "Linear" in classname)):
+        nn.init.normal_(m.weight.data, 0.0, init_gain)
+        if hasattr(m, "bias") and m.bias is not None:
+            nn.init.constant_(m.bias.data, 0.0)
+
     elif "BatchNorm" in classname:
-        nn.init.normal_(m.weight.data, 1.0, 0.02)
-        nn.init.constant_(m.bias.data, 0)
-    else:
-        raise NotImplementedError(f"Unknown module type {classname}")
+        # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
+        nn.init.normal_(m.weight.data, 1.0, init_gain)
+        nn.init.constant_(m.bias.data, 0.0)
 
 
 class NLayerDiscriminator(nn.Module):

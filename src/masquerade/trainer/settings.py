@@ -7,7 +7,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.cli import SaveConfigCallback
 from pydantic import BaseModel, Field
 
-from masquerade.trainer.callbacks import (
+from .callbacks import (
     ImageLogger,
     SetupCallback,
     get_checkpoint_logger,

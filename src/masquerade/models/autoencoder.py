@@ -14,7 +14,7 @@ from torch import nn
 from vector_quantize_pytorch import VectorQuantize
 
 from masquerade.modules.ema import LitEma
-from masquerade.modules.vqvae import ConvDecoder, ConvEncoder, VectorQuantizer
+from masquerade.modules.vqvae import ConvDecoder, ConvEncoder, VectorQuantize2
 
 
 class BaseAutoencoder(L.LightningModule):
@@ -24,6 +24,7 @@ class BaseAutoencoder(L.LightningModule):
 
     def __init__(
         self,
+        learning_rate: float = 1e-4,
         ema_decay: Optional[float] = None,
         monitor: Optional[str] = None,
         input_key: str = "image",
@@ -32,6 +33,7 @@ class BaseAutoencoder(L.LightningModule):
     ):
         super().__init__()
         self.input_key = input_key
+        self.learning_rate = learning_rate
         self.use_ema = ema_decay is not None
         if monitor is not None:
             self.monitor = monitor
@@ -109,10 +111,10 @@ class VQAutoEncoder(BaseAutoencoder):
         *args,
         encoder: ConvEncoder,
         decoder: ConvDecoder,
-        quantizer: Union[VectorQuantizer, VectorQuantize],
+        quantizer: VectorQuantize2,
         loss: nn.Module,
-        opt_ae: OptimizerCallable,
-        opt_disc: OptimizerCallable,
+        opt_ae: OptimizerCallable = torch.optim.Adam,
+        opt_disc: OptimizerCallable = torch.optim.Adam,
         lr_g_factor: float = 1.0,
         **kwargs,
     ):
@@ -157,7 +159,7 @@ class VQAutoEncoder(BaseAutoencoder):
         return x
 
     def forward(self, x: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        z, reg_log = self.encode(x, return_reg_log=True)
+        z, min_encoding_indices, reg_log = self.encode(x, return_reg_log=True)
         dec = self.decode(z)
         return z, dec, reg_log
 
@@ -230,18 +232,19 @@ class VQAutoEncoder(BaseAutoencoder):
         return log_dict_ae
 
     def configure_optimizers(self) -> Any:
-        ae_params = self.get_autoencoder_params()
+        """Lightning module hook that configures optimizers and schedulers."""
         opt_ae = self.opt_ae(
-            ae_params,
-            lr=(self.lr_g_factor or 1.0) * self.learning_rate,
+            self.get_autoencoder_params(),
+            lr=self.lr_g_factor * self.learning_rate,
         )
-        disc_params = self.get_discriminator_params()
+        sched_ae = self.sched_ae(opt_ae)
         opt_disc = self.opt_disc(
-            disc_params,
+            self.get_discriminator_params(),
             lr=self.learning_rate,
         )
+        sched_disc = self.sched_disc(opt_disc)
 
-        return [opt_ae, opt_disc]
+        return {"opt_ae": opt_ae, "sched_ae": sched_ae, "opt_disc": opt_disc, "sched_disc": sched_disc}
 
     @torch.no_grad()
     def log_images(self, batch: Dict, **kwargs) -> Dict:

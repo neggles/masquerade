@@ -34,7 +34,7 @@ def extract_into_tensor(a, t, x_shape):
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
 
-def mixed_checkpoint(func, inputs: dict, params, flag):
+def mixed_checkpoint(func, inputs, params, flag=None):
     """
     Evaluate a function without caching intermediate activations, allowing for
     reduced memory at the expense of extra compute in the backward pass. This differs from the original checkpoint function
@@ -82,7 +82,10 @@ class MixedCheckpointFunction(torch.autograd.Function):
             "dtype": torch.get_autocast_gpu_dtype(),
             "cache_enabled": torch.is_autocast_cache_enabled(),
         }
-        assert len(tensor_keys) == length_tensors and len(non_tensor_keys) == length_non_tensors
+        if len(tensor_keys) != length_tensors:
+            raise ValueError("MixedCheckpointFunction: incorrect number of tensor keys")
+        if len(non_tensor_keys) != length_non_tensors:
+            raise ValueError("MixedCheckpointFunction: incorrect number of non-tensor keys")
 
         ctx.input_tensors = {key: val for (key, val) in zip(tensor_keys, list(args[: ctx.end_tensors]))}
         ctx.input_non_tensors = {
@@ -128,12 +131,7 @@ class MixedCheckpointFunction(torch.autograd.Function):
         )
 
 
-def checkpoint(
-    func: Callable,
-    inputs,
-    params,
-    flag: Optional[bool] = None,
-):
+def checkpoint(func, inputs, params, flag=None):
     """
     Evaluate a function without caching intermediate activations, allowing for
     reduced memory at the expense of extra compute in the backward pass.
