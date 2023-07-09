@@ -1,13 +1,37 @@
+seed_everything: true
+
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: 1
+  precision: bf16-mixed
+  fast_dev_run: 1
+  max_steps: 1000000
+
 model:
-  base_learning_rate: 4.5e-6
-  class_path: masquerade.models.autoencoder.VQAutoEncoder
+  class_path: masquerade.models.VQAutoEncoder
   init_args:
     input_key: jpg
     monitor: val/rec_loss
-    latent_channels: 3
-    vq_embed_dim: 256
-    num_vq_embeddings: 8192
+    ckpt_path: null
+    ema_decay: null
+    ignore_keys: []
+    learning_rate: 1e-4
     lr_g_factor: 1.0
+
+    loss:
+      class_path: masquerade.modules.losses.VQLPIPSWithDiscriminator
+      init_args:
+        disc_start: 20001
+        perceptual_weight: 0.05
+        disc_weight: 0.1
+
+    quantizer:
+      class_path: masquerade.modules.vqvae.VectorQuantize2
+      init_args:
+        n_e: 8192
+        vq_embed_dim: 256
+        beta: 0.25
 
     encoder:
       class_path: masquerade.modules.vqvae.ConvEncoder
@@ -32,26 +56,26 @@ model:
         layers_per_block: 2
         norm_num_groups: 32
         use_conv_shortcut: False
-        conv_downsample: False
+        conv_downsample: False # unused, only here to share args with encoder
         double_z: False
 
-    quantizer:
-      class_path: vector_quantize_pytorch.VectorQuantize
+    opt_ae:
+      class_path: Adam
       init_args:
-        dim: 256
-        codebook_dim: 256
-        codebook_size: 8192
-        commitment_cost: 0.25
-        decay: 0.99
-        epsilon: 1e-5
+        lr: 1e-4
+        betas: [0.9, 0.99]
+        eps: 1e-8
+        weight_decay: 1e-4
+        fused: true
 
-    loss:
-      class_path: masquerade.modules.losses.VQLPIPSWithDiscriminator
+    opt_disc:
+      class_path: Adam
       init_args:
-        perceptual_weight: 0.1
-        disc_start: 20001
-        disc_weight: 0.9
-        learn_logvar: True
+        lr: 1e-4
+        betas: [0.9, 0.99]
+        eps: 1e-8
+        weight_decay: 1e-4
+        fused: true
 
 data:
   class_path: masquerade.dataset.HFDatasetModule
@@ -60,36 +84,10 @@ data:
     resolution: 256
     tokenizer: "google/t5-v1_1-large"
     streaming: false
+    num_proc: 4
 
-lightning:
-  strategy:
-    class_path: pytorch_lightning.strategies.DDPStrategy
-    init_args:
-      find_unused_parameters: True
-
-  modelcheckpoint:
-    init_args:
-      every_n_train_steps: 5000
-
-  callbacks:
-    metrics_over_trainsteps_checkpoint:
-      init_args:
-        every_n_train_steps: 50000
-
-    image_logger:
-      class_path: main.ImageLogger
-      init_args:
-        enable_autocast: False
-        batch_frequency: 1000
-        max_images: 8
-        increase_log_steps: True
-
-  trainer:
-    devices: 0,
-    limit_val_batches: 50
-    benchmark: True
-    accumulate_grad_batches: 1
-    val_check_interval: 10000
-    callbacks:
-      - class_path: masquerade.trainer.callbacks.SetupCallback
-        init_args:
+lr_scheduler:
+  T_max: 10000
+  eta_min: 0.0
+  last_epoch: -1
+  verbose: false
